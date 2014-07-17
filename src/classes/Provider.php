@@ -1,5 +1,4 @@
-<?php
-/**
+<?php /**
  * This file implements the class Provider.
  * 
  * PHP versions 4 and 5
@@ -157,7 +156,21 @@ class Provider
 
         $path = File::r2a(File::a2r($file),Settings::$thumbs_dir);
 
-        if(!file_exists($path) || filectime($file) > filectime($path) ){
+        // We check that the thumb already exists, was created after the image, at the right size
+        $goodThumb = false;
+        if(file_exists($path) && filectime($file) < filectime($path) ){
+        	$dim = getimagesize($path);
+        	$goodThumb = ($dim[0] == Settings::$thumbs_size && $dim[1] == Settings::$thumbs_size );
+        }
+
+        if( !$goodThumb ){
+        	/// If we need to create a thumb, then this is a new picture
+
+        	if(Judge::is_public($file)){
+	        	$r = new RSS(Settings::$conf_dir."/photos_feed.txt");
+	        	$webpath = Settings::$site_address."?f=".urlencode(File::a2r($file));
+	        	$r->add(basename($file),$webpath, "<img src='$webpath&t=Thb' />");
+	        }
 
             /// Create directories
             if(!file_exists(dirname($path))){
@@ -166,12 +179,22 @@ class Provider
 
             /// Create thumbnail
 			$thumb = PhpThumbFactory::create($file);
-			$thumb->resize(200, 200);
+			$thumb->adaptiveResize(Settings::$thumbs_size, Settings::$thumbs_size);
+
 			if(File::Type($file)=="Image"){
 				$thumb->rotateImageNDegrees(Provider::get_orientation_degrees ($file));	
 			}
 			$thumb->save($path);
+			chmod($path,0775);
 		}
+
+		/* Implementation of webp... for later.
+		$webp = $path.".webp";
+		if(!file_exists($webp) ||  filectime($webp) < filectime($path) ){
+			imagewebp(imagecreatefromjpeg($path),$webp);
+		}
+		*/
+
 		return $path;
 	}
 
@@ -183,7 +206,7 @@ class Provider
 		$webimg	=	dirname($basepath)."/".$basefile->name."_small.".$basefile->extension;
 		
 		list($x,$y) = getimagesize($file);
-		if($x <= 800 && $y <= 600){	
+		if($x <= 1200 && $y <= 1200){
 			return $file;
 		}
 		
@@ -194,7 +217,8 @@ class Provider
 			if(!file_exists(dirname($path))){
 				@mkdir(dirname($path),0755,true);
 			}
-			$thumb = PhpThumbFactory::create($file);
+			$options = array('resizeUp' => true, 'jpegQuality' => 70);
+			$thumb = PhpThumbFactory::create($file,$options);
 			$thumb->resize(0, 0);
 			if(File::Type($file)=="Image"){
 				$thumb->rotateImageNDegrees(Provider::get_orientation_degrees($file));	
@@ -245,7 +269,7 @@ class Provider
                     $basefile	= 	new File($file);
                     $basepath	=	File::a2r($file);
                     $path =	Settings::$thumbs_dir.dirname($basepath)."/".$basefile->name.".jpg";	
-                } elseif($thumb){ // Img called on a video, return the thumbnail
+                }elseif($thumb){ // Img called on a video, return the thumbnail
                     $path = Provider::thumb($file);
                 }else{
                     $path = Provider::small($file);
@@ -276,8 +300,8 @@ class Provider
 				header("Cache-Control: maxage=".$expires);
 				header('Expires: ' . gmdate('D, d M Y H:i:s', time()+$expires) . ' GMT');
 			}
-            header('Content-type: image/jpeg');
 
+	        header('Content-type: image/jpeg');
             if(File::Type($path)=="Image"){
             	readfile($path);
             	return;
@@ -293,38 +317,66 @@ class Provider
         }
     }
 
+	/**
+	 * Generates a zip.
+	 *
+	 * @param string $dir  
+	 * @return void
+	 * @author Thibaud Rohmer
+	 */
 	public static function Zip($dir){
 
 		/// Check that user is allowed to acces this content
 		if( !Judge::view($dir)){
 			return;
 		}	
-			
-		/// Prepare file
-		$tmpfile = tempnam("tmp", "zip");
-		$zip = new ZipArchive();
-		$zip->open($tmpfile, ZipArchive::OVERWRITE);
 
-		/// Staff with content
+
+                // Get the relative path of the files
+		$delimPosition = strrpos($dir, '/');
+		if (strlen($dir) == $delimPosition) {
+		        echo "Error: Directory has a slash at the end";
+		        return;
+		}
+
+		// Create list with all filenames
 		$items = Menu::list_files($dir,true);
+		$itemsString = '';
 
 		foreach($items as $item){
 			if(Judge::view($item)){
-				$zip->addFile($item,basename(dirname($item))."/".basename($item));
+                                // Use only the relative path of the filename
+				$item = str_replace('//', '/', $item);
+				$itemsString.=" '".substr($item,$delimPosition+1)."'";
 			}
 		}
 
 		// Close and send to user
-		$fname=basename($dir);
-		$zip->close();
 		header('Content-Type: application/zip');
-		header('Content-Length: ' . filesize($tmpfile));
-		header("Content-Disposition: attachment; filename=\"".htmlentities($fname, ENT_QUOTES ,'UTF-8').".zip\"");
-		readfile($tmpfile);
-		unlink($tmpfile);
+		header("Content-Disposition: attachment; filename=\"".htmlentities(basename($dir), ENT_QUOTES ,'UTF-8').".zip\"");
 
+                // Store the current working directory and change to the albums directory
+		$cwd = getcwd();
+		chdir(substr($dir,0,$delimPosition));
 
+		// ZIP-on-the-fly method copied from http://stackoverflow.com/questions/4357073
+		//
+		// use popen to execute a unix command pipeline
+		// and grab the stdout as a php stream
+		$fp = popen('zip -n .jpg:.JPG:.jpeg:.JPEG -0 - ' . $itemsString, 'r');
 
+		// pick a bufsize that makes you happy (8192 has been suggested).
+		$bufsize = 8192;
+		$buff = '';
+		while( !feof($fp) ) {
+		        $buff = fread($fp, $bufsize);
+                        echo $buff;
+                        /// flush();
+                }
+                pclose($fp);
+                
+                // Chang to the previous working directory
+                chdir($cwd);
 	}
 
 }
