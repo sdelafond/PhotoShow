@@ -195,7 +195,7 @@ class Provider
 				@mkdir(dirname($path),0755,true);
 			}
 			$thumb = PhpThumbFactory::create($file);
-			$thumb->resize(800, 800);
+			$thumb->resize(0, 0);
 			if(File::Type($file)=="Image"){
 				$thumb->rotateImageNDegrees(Provider::get_orientation_degrees($file));	
 			}
